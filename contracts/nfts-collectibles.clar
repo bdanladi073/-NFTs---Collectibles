@@ -10,6 +10,9 @@
 (define-constant ERR_MINT_FAILED (err u106))
 (define-constant ERR_TRANSFER_FAILED (err u107))
 (define-constant ERR_RAFFLE_NOT_FOUND (err u108))
+(define-constant ERR_REFUND_FAILED (err u109))
+(define-constant ERR_RAFFLE_STILL_ACTIVE (err u110))
+(define-constant ERR_ALREADY_REFUNDED (err u111))
 
 (define-data-var next-raffle-id uint u1)
 (define-data-var next-nft-id uint u1)
@@ -44,6 +47,11 @@
   bool
 )
 
+(define-map refund-claims
+  { user: principal, raffle-id: uint }
+  bool
+)
+
 (define-read-only (get-raffle (raffle-id uint))
   (map-get? raffles raffle-id)
 )
@@ -66,6 +74,19 @@
 
 (define-read-only (get-nft-owner (nft-id uint))
   (nft-get-owner? raffle-nft nft-id)
+)
+
+(define-read-only (has-claimed-refund (raffle-id uint) (user principal))
+  (default-to false (map-get? refund-claims { user: user, raffle-id: raffle-id }))
+)
+
+(define-read-only (is-refund-eligible (raffle-id uint))
+  (match (map-get? raffles raffle-id)
+    raffle-data (and
+      (not (get is-active raffle-data))
+      (not (get is-drawn raffle-data))
+      (> (get current-participants raffle-data) u0))
+    false)
 )
 
 (define-public (create-raffle (entry-fee uint) (max-participants uint))
@@ -186,6 +207,28 @@
     (asserts! (is-eq tx-sender current-owner) ERR_NOT_AUTHORIZED)
     (try! (nft-transfer? raffle-nft nft-id tx-sender recipient))
     (ok true)
+  )
+)
+
+(define-public (claim-refund (raffle-id uint))
+  (let
+    (
+      (raffle-data (unwrap! (map-get? raffles raffle-id) ERR_RAFFLE_NOT_FOUND))
+      (entry-fee (get entry-fee raffle-data))
+      (creator (get creator raffle-data))
+    )
+    (asserts! (has-user-entered raffle-id tx-sender) ERR_NOT_AUTHORIZED)
+    (asserts! (is-refund-eligible raffle-id) ERR_RAFFLE_STILL_ACTIVE)
+    (asserts! (not (has-claimed-refund raffle-id tx-sender)) ERR_ALREADY_REFUNDED)
+    
+    (try! (as-contract (stx-transfer? entry-fee creator tx-sender)))
+    
+    (map-set refund-claims
+      { user: tx-sender, raffle-id: raffle-id }
+      true
+    )
+    
+    (ok entry-fee)
   )
 )
 
