@@ -13,6 +13,8 @@
 (define-constant ERR_REFUND_FAILED (err u109))
 (define-constant ERR_RAFFLE_STILL_ACTIVE (err u110))
 (define-constant ERR_ALREADY_REFUNDED (err u111))
+(define-constant ERR_EXTENSION_LIMIT_REACHED (err u112))
+(define-constant ERR_RAFFLE_NOT_EXTENDABLE (err u113))
 
 (define-data-var next-raffle-id uint u1)
 (define-data-var next-nft-id uint u1)
@@ -28,7 +30,9 @@
     is-drawn: bool,
     winner: (optional principal),
     nft-id: (optional uint),
-    stacks-block-height-created: uint
+    stacks-block-height-created: uint,
+    extension-deadline: uint,
+    extensions-used: uint
   }
 )
 
@@ -89,6 +93,22 @@
     false)
 )
 
+(define-read-only (is-extension-eligible (raffle-id uint))
+  (match (map-get? raffles raffle-id)
+    raffle-data (and
+      (get is-active raffle-data)
+      (not (get is-drawn raffle-data))
+      (< (get extensions-used raffle-data) u3)
+      (>= stacks-block-height (get extension-deadline raffle-data)))
+    false)
+)
+
+(define-read-only (get-raffle-deadline (raffle-id uint))
+  (match (map-get? raffles raffle-id)
+    raffle-data (some (get extension-deadline raffle-data))
+    none)
+)
+
 (define-public (create-raffle (entry-fee uint) (max-participants uint))
   (let
     (
@@ -106,7 +126,9 @@
         is-drawn: false,
         winner: none,
         nft-id: none,
-        stacks-block-height-created: stacks-block-height
+        stacks-block-height-created: stacks-block-height,
+        extension-deadline: (+ stacks-block-height u144),
+        extensions-used: u0
       }
     )
     (var-set next-raffle-id (+ raffle-id u1))
@@ -229,6 +251,34 @@
     )
     
     (ok entry-fee)
+  )
+)
+
+(define-public (extend-raffle (raffle-id uint) (additional-blocks uint))
+  (let
+    (
+      (raffle-data (unwrap! (map-get? raffles raffle-id) ERR_RAFFLE_NOT_FOUND))
+      (current-extensions (get extensions-used raffle-data))
+      (current-deadline (get extension-deadline raffle-data))
+    )
+    (asserts! (is-eq tx-sender (get creator raffle-data)) ERR_NOT_AUTHORIZED)
+    (asserts! (is-extension-eligible raffle-id) ERR_RAFFLE_NOT_EXTENDABLE)
+    (asserts! (< current-extensions u3) ERR_EXTENSION_LIMIT_REACHED)
+    (asserts! (and (>= additional-blocks u72) (<= additional-blocks u288)) ERR_NOT_AUTHORIZED)
+    
+    (map-set raffles raffle-id
+      (merge raffle-data
+        {
+          extension-deadline: (+ current-deadline additional-blocks),
+          extensions-used: (+ current-extensions u1)
+        }
+      )
+    )
+    
+    (ok {
+      new-deadline: (+ current-deadline additional-blocks),
+      extensions-remaining: (- u3 (+ current-extensions u1))
+    })
   )
 )
 
