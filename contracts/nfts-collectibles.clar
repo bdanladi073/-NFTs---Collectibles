@@ -15,6 +15,8 @@
 (define-constant ERR_ALREADY_REFUNDED (err u111))
 (define-constant ERR_EXTENSION_LIMIT_REACHED (err u112))
 (define-constant ERR_RAFFLE_NOT_EXTENDABLE (err u113))
+(define-constant ERR_INVALID_WINNER_COUNT (err u114))
+(define-constant ERR_INSUFFICIENT_PARTICIPANTS (err u115))
 
 (define-data-var next-raffle-id uint u1)
 (define-data-var next-nft-id uint u1)
@@ -32,7 +34,9 @@
     nft-id: (optional uint),
     stacks-block-height-created: uint,
     extension-deadline: uint,
-    extensions-used: uint
+    extensions-used: uint,
+    winner-count: uint,
+    winners-drawn: uint
   }
 )
 
@@ -54,6 +58,11 @@
 (define-map refund-claims
   { user: principal, raffle-id: uint }
   bool
+)
+
+(define-map raffle-winners
+  { raffle-id: uint, winner-index: uint }
+  { winner: principal, nft-id: uint }
 )
 
 (define-read-only (get-raffle (raffle-id uint))
@@ -109,6 +118,24 @@
     none)
 )
 
+(define-read-only (get-raffle-winner (raffle-id uint) (winner-index uint))
+  (map-get? raffle-winners { raffle-id: raffle-id, winner-index: winner-index })
+)
+
+(define-read-only (get-all-winners (raffle-id uint))
+  (let
+    (
+      (raffle-data (unwrap! (map-get? raffles raffle-id) (err "raffle not found")))
+      (winner-count (get winners-drawn raffle-data))
+    )
+    (ok (map get-winner-helper-func (list u0 u1 u2 u3 u4 u5 u6 u7 u8 u9)))
+  )
+)
+
+(define-private (get-winner-helper-func (index uint))
+  (get-raffle-winner (var-get next-raffle-id) index)
+)
+
 (define-public (create-raffle (entry-fee uint) (max-participants uint))
   (let
     (
@@ -128,7 +155,40 @@
         nft-id: none,
         stacks-block-height-created: stacks-block-height,
         extension-deadline: (+ stacks-block-height u144),
-        extensions-used: u0
+        extensions-used: u0,
+        winner-count: u1,
+        winners-drawn: u0
+      }
+    )
+    (var-set next-raffle-id (+ raffle-id u1))
+    (ok raffle-id)
+  )
+)
+
+(define-public (create-multi-winner-raffle (entry-fee uint) (max-participants uint) (winner-count uint))
+  (let
+    (
+      (raffle-id (var-get next-raffle-id))
+    )
+    (asserts! (> max-participants u0) ERR_NOT_AUTHORIZED)
+    (asserts! (> entry-fee u0) ERR_NOT_AUTHORIZED)
+    (asserts! (and (> winner-count u0) (<= winner-count u10)) ERR_INVALID_WINNER_COUNT)
+    (asserts! (>= max-participants winner-count) ERR_INVALID_WINNER_COUNT)
+    (map-set raffles raffle-id
+      {
+        creator: tx-sender,
+        entry-fee: entry-fee,
+        max-participants: max-participants,
+        current-participants: u0,
+        is-active: true,
+        is-drawn: false,
+        winner: none,
+        nft-id: none,
+        stacks-block-height-created: stacks-block-height,
+        extension-deadline: (+ stacks-block-height u144),
+        extensions-used: u0,
+        winner-count: winner-count,
+        winners-drawn: u0
       }
     )
     (var-set next-raffle-id (+ raffle-id u1))
@@ -202,6 +262,59 @@
     
     (var-set next-nft-id (+ nft-id u1))
     (ok { winner: winner, nft-id: nft-id })
+  )
+)
+
+(define-public (draw-next-winner (raffle-id uint))
+  (let
+    (
+      (raffle-data (unwrap! (map-get? raffles raffle-id) ERR_RAFFLE_NOT_FOUND))
+      (participant-count (get current-participants raffle-data))
+      (total-winners (get winner-count raffle-data))
+      (current-winners (get winners-drawn raffle-data))
+      (random-seed (+ stacks-block-height (get stacks-block-height-created raffle-data) current-winners))
+      (winner-index (mod random-seed participant-count))
+      (winner (unwrap! (get-participant-at-index raffle-id winner-index) ERR_NO_PARTICIPANTS))
+      (nft-id (var-get next-nft-id))
+    )
+    (asserts! (or (is-eq tx-sender (get creator raffle-data)) (is-eq tx-sender CONTRACT_OWNER)) ERR_NOT_AUTHORIZED)
+    (asserts! (get is-active raffle-data) ERR_RAFFLE_NOT_ACTIVE)
+    (asserts! (< current-winners total-winners) ERR_RAFFLE_ALREADY_DRAWN)
+    (asserts! (> participant-count u0) ERR_NO_PARTICIPANTS)
+    (asserts! (>= participant-count total-winners) ERR_INSUFFICIENT_PARTICIPANTS)
+    
+    (try! (nft-mint? raffle-nft nft-id winner))
+    
+    (map-set raffle-winners
+      { raffle-id: raffle-id, winner-index: current-winners }
+      { winner: winner, nft-id: nft-id }
+    )
+    
+    (let
+      (
+        (new-winner-count (+ current-winners u1))
+        (is-complete (is-eq new-winner-count total-winners))
+      )
+      (map-set raffles raffle-id
+        (merge raffle-data 
+          { 
+            is-drawn: is-complete,
+            is-active: (not is-complete),
+            winners-drawn: new-winner-count,
+            winner: (if (is-eq new-winner-count u1) (some winner) (get winner raffle-data)),
+            nft-id: (if (is-eq new-winner-count u1) (some nft-id) (get nft-id raffle-data))
+          }
+        )
+      )
+      
+      (var-set next-nft-id (+ nft-id u1))
+      (ok { 
+        winner: winner, 
+        nft-id: nft-id, 
+        winner-number: new-winner-count,
+        remaining-winners: (- total-winners new-winner-count)
+      })
+    )
   )
 )
 
