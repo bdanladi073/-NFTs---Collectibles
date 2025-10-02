@@ -17,6 +17,8 @@
 (define-constant ERR_RAFFLE_NOT_EXTENDABLE (err u113))
 (define-constant ERR_INVALID_WINNER_COUNT (err u114))
 (define-constant ERR_INSUFFICIENT_PARTICIPANTS (err u115))
+(define-constant ERR_INVALID_ENTRY_COUNT (err u116))
+(define-constant ERR_EXCEEDS_MAX_ENTRIES (err u117))
 
 (define-data-var next-raffle-id uint u1)
 (define-data-var next-nft-id uint u1)
@@ -55,6 +57,11 @@
   bool
 )
 
+(define-map user-entry-counts
+  { user: principal, raffle-id: uint }
+  uint
+)
+
 (define-map refund-claims
   { user: principal, raffle-id: uint }
   bool
@@ -79,6 +86,10 @@
 
 (define-read-only (has-user-entered (raffle-id uint) (user principal))
   (default-to false (map-get? user-raffle-entries { user: user, raffle-id: raffle-id }))
+)
+
+(define-read-only (get-user-entry-count (raffle-id uint) (user principal))
+  (default-to u0 (map-get? user-entry-counts { user: user, raffle-id: raffle-id }))
 )
 
 (define-read-only (get-participant-at-index (raffle-id uint) (index uint))
@@ -224,11 +235,78 @@
       true
     )
     
+    (map-set user-entry-counts
+      { user: tx-sender, raffle-id: raffle-id }
+      u1
+    )
+    
     (map-set raffles raffle-id
       (merge raffle-data { current-participants: (+ current-count u1) })
     )
     
     (ok true)
+  )
+)
+
+(define-public (enter-raffle-bulk (raffle-id uint) (entry-count uint))
+  (let
+    (
+      (raffle-data (unwrap! (map-get? raffles raffle-id) ERR_RAFFLE_NOT_FOUND))
+      (current-count (get current-participants raffle-data))
+      (max-count (get max-participants raffle-data))
+      (entry-fee (get entry-fee raffle-data))
+      (total-fee (* entry-fee entry-count))
+      (current-user-entries (get-user-entry-count raffle-id tx-sender))
+      (entries-list (if (is-eq entry-count u1) (list u0)
+                     (if (is-eq entry-count u2) (list u0 u1)
+                      (if (is-eq entry-count u3) (list u0 u1 u2)
+                       (if (is-eq entry-count u4) (list u0 u1 u2 u3)
+                        (if (is-eq entry-count u5) (list u0 u1 u2 u3 u4)
+                         (if (is-eq entry-count u6) (list u0 u1 u2 u3 u4 u5)
+                          (if (is-eq entry-count u7) (list u0 u1 u2 u3 u4 u5 u6)
+                           (if (is-eq entry-count u8) (list u0 u1 u2 u3 u4 u5 u6 u7)
+                            (if (is-eq entry-count u9) (list u0 u1 u2 u3 u4 u5 u6 u7 u8)
+                             (list u0 u1 u2 u3 u4 u5 u6 u7 u8 u9)))))))))))
+    )
+    (asserts! (get is-active raffle-data) ERR_RAFFLE_NOT_ACTIVE)
+    (asserts! (not (get is-drawn raffle-data)) ERR_RAFFLE_ALREADY_DRAWN)
+    (asserts! (and (> entry-count u0) (<= entry-count u10)) ERR_INVALID_ENTRY_COUNT)
+    (asserts! (<= (+ current-count entry-count) max-count) ERR_RAFFLE_NOT_ACTIVE)
+    (asserts! (<= (+ current-user-entries entry-count) u10) ERR_EXCEEDS_MAX_ENTRIES)
+    
+    (try! (stx-transfer? total-fee tx-sender (get creator raffle-data)))
+    
+    (fold add-entry-helper entries-list { raffle-id: raffle-id, start-index: current-count })
+    
+    (map-set user-raffle-entries
+      { user: tx-sender, raffle-id: raffle-id }
+      true
+    )
+    
+    (map-set user-entry-counts
+      { user: tx-sender, raffle-id: raffle-id }
+      (+ current-user-entries entry-count)
+    )
+    
+    (map-set raffles raffle-id
+      (merge raffle-data { current-participants: (+ current-count entry-count) })
+    )
+    
+    (ok { entries: entry-count, total-entries: (+ current-user-entries entry-count) })
+  )
+)
+
+(define-private (add-entry-helper (offset uint) (context { raffle-id: uint, start-index: uint }))
+  (let
+    (
+      (raffle-id (get raffle-id context))
+      (index (+ (get start-index context) offset))
+    )
+    (map-set participant-list
+      { raffle-id: raffle-id, index: index }
+      tx-sender
+    )
+    context
   )
 )
 
