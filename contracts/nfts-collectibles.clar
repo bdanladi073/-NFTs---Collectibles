@@ -498,3 +498,55 @@
     entered: (has-user-entered raffle-id tx-sender)
   }
 )
+
+(define-data-var metadata-admin (optional principal) none)
+
+(define-map token-uri
+  { token-id: uint }
+  { uri: (string-ascii 256) }
+)
+
+(define-public (set-metadata-admin)
+  (if (is-none (var-get metadata-admin))
+      (begin (var-set metadata-admin (some tx-sender)) (ok true))
+      (err u102))
+)
+
+(define-read-only (get-metadata-admin)
+  (var-get metadata-admin)
+)
+
+(define-read-only (is-metadata-admin (who principal))
+  (match (var-get metadata-admin)
+    current (is-eq who current)
+    false)
+)
+
+(define-public (set-token-uri (token-id uint) (uri (string-ascii 256)))
+  (match (var-get metadata-admin)
+    current (if (is-eq tx-sender current)
+                (begin
+                  (map-set token-uri { token-id: token-id } { uri: uri })
+                  (ok true))
+                (err u100))
+    (err u101))
+)
+
+(define-public (mint-with-uri (recipient principal) (token-id uint) (uri (string-ascii 256)))
+  (match (var-get metadata-admin)
+    current (if (is-eq tx-sender current)
+                (if (is-none (nft-get-owner? raffle-nft token-id))
+                    (begin
+                      (try! (nft-mint? raffle-nft token-id recipient))
+                      (map-set token-uri { token-id: token-id } { uri: uri })
+                      (ok true))
+                    (err u200))
+                (err u100))
+    (err u101))
+)
+
+(define-read-only (get-token-uri (token-id uint))
+  (match (map-get? token-uri { token-id: token-id })
+    entry (some (get uri entry))
+    none)
+)
